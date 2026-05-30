@@ -35,6 +35,26 @@ create table if not exists public.votes (
 create index if not exists votes_month_idx on public.votes (month);
 create index if not exists votes_created_at_idx on public.votes (created_at desc);
 
+-- Free-form wall scrawls (kiss/marry/kill columns on the bathroom board).
+-- Unlike `votes` there's no per-voter limit at the DB layer — the front-end
+-- enforces "one scrawl per category per visit". `slug` may match a known model
+-- in public.models or be 'other' for write-ins; we don't FK it so anything the
+-- writer types still survives.
+create table if not exists public.scrawls (
+  id uuid primary key default gen_random_uuid(),
+  voter_token text not null,
+  month text not null,                          -- YYYY-MM (UTC)
+  category text not null check (category in ('kiss', 'marry', 'kill')),
+  slug text not null,
+  text text,                                    -- raw text the writer typed (write-in)
+  reason text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists scrawls_month_idx on public.scrawls (month);
+create index if not exists scrawls_month_cat_idx on public.scrawls (month, category);
+create index if not exists scrawls_voter_idx on public.scrawls (voter_token, month);
+
 -- Reactions on individual reasons. The (vote_id, category) pair identifies a
 -- specific reason — same shape as the API's reason id `${voteId}:${category}`.
 -- `reason_id` is a generated column so we can index/query it directly.
@@ -63,6 +83,7 @@ create table if not exists public.monthly_snapshots (
 -- RLS
 alter table public.models enable row level security;
 alter table public.votes enable row level security;
+alter table public.scrawls enable row level security;
 alter table public.monthly_snapshots enable row level security;
 alter table public.reason_reactions enable row level security;
 
@@ -73,6 +94,10 @@ create policy "models readable by anyone"
 drop policy if exists "votes readable by anyone" on public.votes;
 create policy "votes readable by anyone"
   on public.votes for select using (true);
+
+drop policy if exists "scrawls readable by anyone" on public.scrawls;
+create policy "scrawls readable by anyone"
+  on public.scrawls for select using (true);
 
 drop policy if exists "snapshots readable by anyone" on public.monthly_snapshots;
 create policy "snapshots readable by anyone"
