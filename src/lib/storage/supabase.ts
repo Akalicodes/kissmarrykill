@@ -54,6 +54,45 @@ export class SupabaseStorage implements Storage {
     }
   }
 
+  async recordScrawl(opts: {
+    category: Category;
+    slug: string;
+    text?: string;
+    reason?: string;
+    voterToken: string;
+    month: string;
+  }): Promise<void> {
+    // Best-effort: requires an optional `scrawls` table. If it does not exist
+    // yet we swallow the error so the wall still works (the write just won't
+    // persist across reloads until the table is added).
+    const { error } = await this.client.from("scrawls").insert({
+      month: opts.month,
+      category: opts.category,
+      slug: opts.slug,
+      text: opts.text ?? null,
+      reason: opts.reason ?? null,
+      voter_token: opts.voterToken,
+    });
+    // 42P01 = undefined_table, 42703 = undefined_column — both are fine until
+    // the schema is applied; anything else is a real problem.
+    if (error && error.code !== "42P01" && error.code !== "42703") {
+      console.warn("recordScrawl failed", error.message);
+    }
+  }
+
+  private async scrawlSlugs(month: string): Promise<Record<Category, string[]>> {
+    const empty: Record<Category, string[]> = { kiss: [], marry: [], kill: [] };
+    const { data, error } = await this.client
+      .from("scrawls")
+      .select("category, slug")
+      .eq("month", month);
+    if (error || !data) return empty;
+    for (const row of data as Array<{ category: Category; slug: string }>) {
+      if (empty[row.category]) empty[row.category].push(row.slug);
+    }
+    return empty;
+  }
+
   async getLeaderboard(month: string): Promise<Leaderboard> {
     const { data, error } = await this.client
       .from("votes")
@@ -65,12 +104,15 @@ export class SupabaseStorage implements Storage {
       marry_slug: string;
       kill_slug: string;
     }>;
+    const scrawls = await this.scrawlSlugs(month);
+    const scrawlCount =
+      scrawls.kiss.length + scrawls.marry.length + scrawls.kill.length;
     return {
       month,
-      kiss: tally(rows.map((r) => r.kiss_slug)),
-      marry: tally(rows.map((r) => r.marry_slug)),
-      kill: tally(rows.map((r) => r.kill_slug)),
-      totalVoters: rows.length,
+      kiss: tally([...rows.map((r) => r.kiss_slug), ...scrawls.kiss]),
+      marry: tally([...rows.map((r) => r.marry_slug), ...scrawls.marry]),
+      kill: tally([...rows.map((r) => r.kill_slug), ...scrawls.kill]),
+      totalVoters: rows.length + scrawlCount,
     };
   }
 

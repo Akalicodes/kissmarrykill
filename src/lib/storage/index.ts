@@ -13,6 +13,19 @@ import { SupabaseStorage } from "./supabase";
 export interface Storage {
   hasVoted(voterToken: string, month: string): Promise<boolean>;
   recordVote(input: VoteInput, month: string): Promise<void>;
+  /**
+   * Records a single free-form "scrawl" on the wall — one person writing one
+   * model name in one column. Unlike a full vote this is unlimited, mirroring
+   * how the physical board lets anyone walk up and add a name.
+   */
+  recordScrawl(opts: {
+    category: Category;
+    slug: string;
+    text?: string;
+    reason?: string;
+    voterToken: string;
+    month: string;
+  }): Promise<void>;
   getLeaderboard(month: string): Promise<Leaderboard>;
   getArchive(): Promise<ArchiveEntry[]>;
   getMyVote(voterToken: string, month: string): Promise<{

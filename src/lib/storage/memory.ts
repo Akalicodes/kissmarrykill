@@ -42,9 +42,20 @@ type StoredReaction = {
  * Seeds itself with plausible votes + reactions + 2 past months
  * (with awards already computed) so the whole site looks alive on first paint.
  */
+type StoredScrawl = {
+  month: string;
+  category: Category;
+  slug: string;
+  text?: string;
+  reason?: string;
+  voterToken: string;
+  at: string;
+};
+
 export class MemoryStorage implements Storage {
   private votes: StoredVote[] = [];
   private reactions: StoredReaction[] = [];
+  private scrawls: StoredScrawl[] = [];
   private archive: ArchiveEntry[] = [];
   private seeded = false;
 
@@ -204,14 +215,36 @@ export class MemoryStorage implements Storage {
     });
   }
 
+  async recordScrawl(opts: {
+    category: Category;
+    slug: string;
+    text?: string;
+    reason?: string;
+    voterToken: string;
+    month: string;
+  }): Promise<void> {
+    this.scrawls.push({
+      month: opts.month,
+      category: opts.category,
+      slug: opts.slug,
+      text: opts.text,
+      reason: opts.reason,
+      voterToken: opts.voterToken,
+      at: new Date().toISOString(),
+    });
+  }
+
   async getLeaderboard(month: string): Promise<Leaderboard> {
     const monthVotes = this.votes.filter((v) => v.month === month);
+    const monthScrawls = this.scrawls.filter((s) => s.month === month);
+    const scrawlsBy = (cat: Category) =>
+      monthScrawls.filter((s) => s.category === cat).map((s) => s.slug);
     return {
       month,
-      kiss: tally(monthVotes.map((v) => v.kiss)),
-      marry: tally(monthVotes.map((v) => v.marry)),
-      kill: tally(monthVotes.map((v) => v.kill)),
-      totalVoters: monthVotes.length,
+      kiss: tally([...monthVotes.map((v) => v.kiss), ...scrawlsBy("kiss")]),
+      marry: tally([...monthVotes.map((v) => v.marry), ...scrawlsBy("marry")]),
+      kill: tally([...monthVotes.map((v) => v.kill), ...scrawlsBy("kill")]),
+      totalVoters: monthVotes.length + monthScrawls.length,
     };
   }
 
