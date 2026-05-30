@@ -95,6 +95,13 @@ export const MODELS: Model[] = [
     color: "#e0e0e0",
     tag: "the IDE that ate IDEs",
   },
+  {
+    slug: "other",
+    name: "Other",
+    org: "Write-in",
+    color: "#94a3b8",
+    tag: "the one that wasn't on the list",
+  },
 ];
 
 export const MODEL_BY_SLUG: Record<string, Model> = MODELS.reduce(

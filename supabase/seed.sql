@@ -10,7 +10,8 @@ insert into public.models (slug, name, org, color, tag) values
   ('qwen',       'Qwen',       'Alibaba',    '#a14bff', 'the silent giant'),
   ('perplexity', 'Perplexity', 'Perplexity', '#20b6c4', 'search that talks back'),
   ('copilot',    'Copilot',    'Microsoft',  '#00a4ef', 'office-core'),
-  ('cursor',     'Cursor',     'Anysphere',  '#e0e0e0', 'the IDE that ate IDEs')
+  ('cursor',     'Cursor',     'Anysphere',  '#e0e0e0', 'the IDE that ate IDEs'),
+  ('other',      'Other',      'Write-in',   '#94a3b8', 'the one that wasn''t on the list')
 on conflict (slug) do update set
   name = excluded.name,
   org = excluded.org,
