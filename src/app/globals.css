@@ -15,6 +15,10 @@
   --font-indie-flower:       "Indie Flower";
   --font-rock-salt:          "Rock Salt";
   --font-patrick-hand:       "Patrick Hand";
+  --font-shadows:            "Shadows Into Light";
+  --font-nanum-pen:          "Nanum Pen Script";
+  --font-reenie:             "Reenie Beanie";
+  --font-gloria:             "Gloria Hallelujah";
 }
 
 html,
@@ -90,12 +94,24 @@ body {
     letter-spacing: 0.3px;
   }
 
-  /* Marker font — Permanent Marker for big headings */
+  /* Marker font — Permanent Marker for big headings.
+     The 0.1px blur reads as "ink soaked into paper" on big type but turns
+     small type mushy, so the blur is gated on min-resolution + screen width:
+     only larger sizes on retina desktops keep it. */
   .marker {
     font-family: var(--font-permanent-marker), cursive;
     font-weight: 400;
     letter-spacing: 0.02em;
-    filter: blur(0.1px);
+  }
+  @media (min-width: 761px) {
+    .marker {
+      filter: blur(0.1px);
+    }
+  }
+  /* Anything explicitly opted out (mobile small headings) gets a no-blur escape. */
+  .marker.crisp,
+  .crisp {
+    filter: none !important;
   }
 
   /* Hand font — Kalam for body scrawl */
@@ -182,6 +198,117 @@ body {
     pointer-events: none;
     mix-blend-mode: multiply;
   }
+}
+
+/* ── Handwritten "ink wobble" ────────────────────────────────────────────────
+   The fonts on the wall are nice cursives, but they're still vector-clean.
+   Real marker on a wall has uneven edges where ink bleeds into the surface.
+   `.ink-wobble` runs the text through an SVG turbulence + displacement
+   filter (defined in layout.tsx) so each letter's outline shimmies just
+   enough to read as actually-handwritten instead of "computer cursive".
+   Layered on top: a tiny same-color text-shadow simulates marker pressure. */
+.ink-wobble {
+  filter: url(#ink-wobble);
+  text-shadow:
+    0.4px 0.4px 0 currentColor,
+   -0.3px 0.3px 0 currentColor;
+}
+.ink-wobble-strong {
+  filter: url(#ink-wobble-strong);
+  text-shadow:
+    0.5px 0.5px 0 currentColor,
+   -0.4px 0.4px 0 currentColor,
+    0    1px   1.2px rgba(0, 0, 0, 0.05);
+}
+/* Tiny screens may render the displacement filter coarsely. Ease the scale
+   on small mobile to keep readability without losing the hand-feel. */
+@media (max-width: 480px) {
+  .ink-wobble       { filter: url(#ink-wobble);        }
+  .ink-wobble-strong { filter: url(#ink-wobble);        }
+}
+/* iOS Safari prior to 15 misrenders feDisplacementMap on text — opt out
+   gracefully by leaving the text-shadow which still looks marker-y. */
+@supports not (filter: url(#ink-wobble)) {
+  .ink-wobble, .ink-wobble-strong { filter: none; }
+}
+
+/* Fresh wall scrawl pop — opacity + a tiny bounce. We can't include the
+   per-scrawl rotate here (each one has its own angle as inline style); the
+   scale-only transform keeps the parent rotate intact. */
+@keyframes scrawlIn {
+  0%   { opacity: 0; transform: scale(0.6) translateY(6px); filter: blur(0.5px); }
+  60%  { opacity: 1; transform: scale(1.08) translateY(0);   filter: blur(0); }
+  100% { opacity: 1; transform: scale(1)    translateY(0);   filter: blur(0); }
+}
+.scrawl-in {
+  animation: scrawlIn 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* Mobile bottom-sheet writer slides up from the bottom. */
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0);    }
+}
+.sheet-up {
+  animation: sheetUp 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Backdrop fades in. */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.fade-in {
+  animation: fadeIn 0.25s ease both;
+}
+
+/* Desktop floating writer pops in — slight scale + fade so it feels like
+   the marker just touched the wall. */
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.86) translateY(-6px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+.pop-in {
+  animation: pop 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: top left;
+}
+
+/* Marker dot ripple under the click point on desktop — visual cue that the
+   wall registered the tap. */
+@keyframes ripple {
+  0%   { opacity: 0.6; transform: translate(-50%, -50%) scale(0.2); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(2.6); }
+}
+.click-ripple {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  pointer-events: none;
+  animation: ripple 0.55s ease-out forwards;
+  z-index: 25;
+}
+
+/* Subtle "hover hint" so columns invite a click on desktop. */
+.wall-col {
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.wall-col[data-clickable="true"]:hover {
+  background-color: rgba(0, 0, 0, 0.018);
+}
+
+/* "posted ✓" stamp pop — appears, hangs for ~1s, then dissolves. */
+@keyframes postedPop {
+  0%   { opacity: 0; transform: rotate(-3deg) scale(0.55); }
+  18%  { opacity: 1; transform: rotate(-3deg) scale(1.18); }
+  30%  { opacity: 1; transform: rotate(-3deg) scale(1);    }
+  78%  { opacity: 1; transform: rotate(-3deg) scale(1);    }
+  100% { opacity: 0; transform: rotate(-3deg) scale(0.92) translateY(-6px); }
+}
+.posted-pop {
+  display: inline-flex;
+  align-items: center;
+  animation: postedPop 1.6s ease-out both;
 }
 
 /* Scrollbar */

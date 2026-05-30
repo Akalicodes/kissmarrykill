@@ -11,6 +11,7 @@ import type {
   Reason,
   ReasonSort,
   VoteInput,
+  WallSample,
 } from "@/lib/types";
 import type { Storage } from "./index";
 
@@ -80,15 +81,27 @@ export class SupabaseStorage implements Storage {
     }
   }
 
-  private async scrawlSlugs(month: string): Promise<Record<Category, string[]>> {
-    const empty: Record<Category, string[]> = { kiss: [], marry: [], kill: [] };
+  private async scrawlsForMonth(
+    month: string,
+  ): Promise<Record<Category, Array<{ slug: string; reason: string | null }>>> {
+    const empty: Record<Category, Array<{ slug: string; reason: string | null }>> = {
+      kiss: [],
+      marry: [],
+      kill: [],
+    };
     const { data, error } = await this.client
       .from("scrawls")
-      .select("category, slug")
+      .select("category, slug, reason")
       .eq("month", month);
     if (error || !data) return empty;
-    for (const row of data as Array<{ category: Category; slug: string }>) {
-      if (empty[row.category]) empty[row.category].push(row.slug);
+    for (const row of data as Array<{
+      category: Category;
+      slug: string;
+      reason: string | null;
+    }>) {
+      if (empty[row.category]) {
+        empty[row.category].push({ slug: row.slug, reason: row.reason });
+      }
     }
     return empty;
   }
@@ -96,23 +109,62 @@ export class SupabaseStorage implements Storage {
   async getLeaderboard(month: string): Promise<Leaderboard> {
     const { data, error } = await this.client
       .from("votes")
-      .select("kiss_slug, marry_slug, kill_slug")
+      .select(
+        "kiss_slug, marry_slug, kill_slug, kiss_reason, marry_reason, kill_reason",
+      )
       .eq("month", month);
     if (error) throw error;
     const rows = (data ?? []) as Array<{
       kiss_slug: string;
       marry_slug: string;
       kill_slug: string;
+      kiss_reason: string | null;
+      marry_reason: string | null;
+      kill_reason: string | null;
     }>;
-    const scrawls = await this.scrawlSlugs(month);
+    const scrawls = await this.scrawlsForMonth(month);
     const scrawlCount =
       scrawls.kiss.length + scrawls.marry.length + scrawls.kill.length;
+
+    const sampleFor = (cat: Category): WallSample[] => {
+      const out: WallSample[] = [];
+      for (const r of rows) {
+        const slug =
+          cat === "kiss" ? r.kiss_slug : cat === "marry" ? r.marry_slug : r.kill_slug;
+        const reason =
+          cat === "kiss"
+            ? r.kiss_reason
+            : cat === "marry"
+              ? r.marry_reason
+              : r.kill_reason;
+        if (reason && reason.trim()) out.push({ slug, reason: reason.trim() });
+      }
+      for (const s of scrawls[cat]) {
+        if (s.reason && s.reason.trim()) out.push({ slug: s.slug, reason: s.reason.trim() });
+      }
+      return shuffleStable(out, `${month}:${cat}`).slice(0, 48);
+    };
+
     return {
       month,
-      kiss: tally([...rows.map((r) => r.kiss_slug), ...scrawls.kiss]),
-      marry: tally([...rows.map((r) => r.marry_slug), ...scrawls.marry]),
-      kill: tally([...rows.map((r) => r.kill_slug), ...scrawls.kill]),
+      kiss: tally([
+        ...rows.map((r) => r.kiss_slug),
+        ...scrawls.kiss.map((s) => s.slug),
+      ]),
+      marry: tally([
+        ...rows.map((r) => r.marry_slug),
+        ...scrawls.marry.map((s) => s.slug),
+      ]),
+      kill: tally([
+        ...rows.map((r) => r.kill_slug),
+        ...scrawls.kill.map((s) => s.slug),
+      ]),
       totalVoters: rows.length + scrawlCount,
+      samples: {
+        kiss: sampleFor("kiss"),
+        marry: sampleFor("marry"),
+        kill: sampleFor("kill"),
+      },
     };
   }
 
@@ -283,6 +335,18 @@ export class SupabaseStorage implements Storage {
 
     return { kind: opts.kind, count: count ?? 0, on };
   }
+}
+
+function shuffleStable<T>(arr: T[], seedKey: string): T[] {
+  let h = 5381;
+  for (let i = 0; i < seedKey.length; i++) h = (((h << 5) + h) ^ seedKey.charCodeAt(i)) | 0;
+  const out = arr.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    h = (h * 1664525 + 1013904223) | 0;
+    const j = Math.abs(h) % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
 function tally(slugs: string[]): RankingRow[] {

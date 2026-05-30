@@ -3,7 +3,7 @@
 
 export function OriginHero() {
   return (
-    <section id="origin" className="relative px-4 pt-12 pb-16 md:px-6 md:pt-16">
+    <section id="origin" className="relative px-3 pt-6 pb-6 sm:px-4 sm:pt-12 sm:pb-12 md:px-6 md:pt-16">
       <div className="mx-auto max-w-5xl">
 
         {/* Board photo */}
@@ -11,10 +11,11 @@ export function OriginHero() {
           style={{
             position:     "relative",
             overflow:     "hidden",
-            borderRadius: "18px",
+            borderRadius: "14px",
             border:       "1px solid rgba(0,0,0,0.08)",
-            boxShadow:    "0 40px 80px -20px rgba(0,0,0,0.22), 0 4px 12px -2px rgba(0,0,0,0.1)",
+            boxShadow:    "0 24px 60px -18px rgba(0,0,0,0.22), 0 3px 10px -2px rgba(0,0,0,0.1)",
             transform:    "rotate(-0.4deg)",
+            margin:       0,
           }}
         >
           <img
@@ -24,52 +25,54 @@ export function OriginHero() {
           />
         </figure>
 
-        {/* Credits */}
+        {/* Credits + caption row — stacked on mobile, inline on desktop */}
         <div
           style={{
-            marginTop:      "0.75rem",
-            display:        "flex",
-            justifyContent: "flex-end",
-            gap:            "1.25rem",
-            paddingRight:   "0.25rem",
+            marginTop:     "0.6rem",
+            display:       "flex",
+            alignItems:    "baseline",
+            justifyContent: "space-between",
+            gap:           "0.75rem",
+            flexWrap:      "wrap",
           }}
         >
-          {["@bg8.ai", "@vls.solutions"].map((handle) => (
-            <a
-              key={handle}
-              href={`https://instagram.com/${handle.replace("@", "")}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                fontFamily:     "var(--font-outfit), sans-serif",
-                fontWeight:     500,
-                fontSize:       "0.8rem",
-                color:          "#555",
-                textDecoration: "none",
-                transition:     "color 0.2s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#111")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "#555")}
-            >
-              {handle}
-            </a>
-          ))}
-        </div>
+          <p
+            style={{
+              fontFamily:    "var(--font-outfit), sans-serif",
+              fontWeight:    800,
+              fontSize:      "clamp(0.9rem, 3vw, 1.4rem)",
+              color:         "#111",
+              lineHeight:    1.3,
+              letterSpacing: "-0.01em",
+              margin:        0,
+            }}
+          >
+            this is where it all started.
+          </p>
 
-        {/* Caption line */}
-        <p
-          style={{
-            fontFamily:    "var(--font-outfit), sans-serif",
-            fontWeight:    800,
-            fontSize:      "clamp(1rem, 3vw, 1.6rem)",
-            color:         "#111",
-            lineHeight:    1.3,
-            letterSpacing: "-0.01em",
-            marginTop:     "1rem",
-          }}
-        >
-          this is where it all started.
-        </p>
+          <div style={{ display: "flex", gap: "1rem" }}>
+            {["@bg8.ai", "@vls.solutions"].map((handle) => (
+              <a
+                key={handle}
+                href={`https://instagram.com/${handle.replace("@", "")}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  fontFamily:     "var(--font-outfit), sans-serif",
+                  fontWeight:     500,
+                  fontSize:       "0.78rem",
+                  color:          "#555",
+                  textDecoration: "none",
+                  transition:     "color 0.2s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#111")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#555")}
+              >
+                {handle}
+              </a>
+            ))}
+          </div>
+        </div>
 
       </div>
     </section>

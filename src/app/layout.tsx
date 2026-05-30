@@ -11,6 +11,10 @@ import {
   Geo,
   Gochi_Hand,
   Outfit,
+  Shadows_Into_Light,
+  Nanum_Pen_Script,
+  Reenie_Beanie,
+  Gloria_Hallelujah,
 } from "next/font/google";
 import "./globals.css";
 
@@ -91,6 +95,35 @@ const outfit = Outfit({
   display: "swap",
 });
 
+// Genuinely-handwritten faces for the wall scrawls.
+const shadowsIntoLight = Shadows_Into_Light({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-shadows",
+  display: "swap",
+});
+
+const nanumPen = Nanum_Pen_Script({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-nanum-pen",
+  display: "swap",
+});
+
+const reenieBeanie = Reenie_Beanie({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-reenie",
+  display: "swap",
+});
+
+const gloria = Gloria_Hallelujah({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-gloria",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "Kiss / Marry / Kill: AI — Live LLM Popularity Index",
   description:
@@ -125,11 +158,38 @@ export default function RootLayout({
     geo.variable,
     gochiHand.variable,
     outfit.variable,
+    shadowsIntoLight.variable,
+    nanumPen.variable,
+    reenieBeanie.variable,
+    gloria.variable,
   ].join(" ");
 
   return (
     <html lang="en" className={fontClasses}>
-      <body className="relative overflow-x-hidden">{children}</body>
+      <body className="relative overflow-x-hidden">
+        {/* Global SVG defs — used by `.ink-wobble` and `.ink-wobble-strong` to
+            wobble each letter's edges so handwritten text actually looks
+            handwritten (not just a cursive font). One copy is enough; every
+            element that references the filter id reuses it. */}
+        <svg
+          aria-hidden
+          width="0"
+          height="0"
+          style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}
+        >
+          <defs>
+            <filter id="ink-wobble">
+              <feTurbulence type="fractalNoise" baseFrequency="0.022" numOctaves="2" seed="3" />
+              <feDisplacementMap in="SourceGraphic" scale="1.4" />
+            </filter>
+            <filter id="ink-wobble-strong">
+              <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="7" />
+              <feDisplacementMap in="SourceGraphic" scale="2.4" />
+            </filter>
+          </defs>
+        </svg>
+        {children}
+      </body>
     </html>
   );
 }

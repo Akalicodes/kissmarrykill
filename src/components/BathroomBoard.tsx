@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useBoard } from "./BoardProvider";
+import { burstConfetti } from "@/lib/confetti";
 import { getModel, MODELS, resolveSlug, type Model } from "@/lib/models";
 import { formatMonthLabel } from "@/lib/month";
-import type { ArchiveEntry, Category, RankingRow } from "@/lib/types";
+import { playVote } from "@/lib/sound";
+import type { ArchiveEntry, Category, Leaderboard, RankingRow, WallSample } from "@/lib/types";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -33,8 +35,13 @@ const INKS = [
   "#b367c9", "#566173",
 ];
 
-const FILL_DESKTOP = 24;
-const FILL_NARROW  = 14;
+// Total scrawls per column. Mobile is much tighter so the page doesn't scroll
+// forever — about half of them get reasons attached, which still feels alive.
+const FILL_DESKTOP = 22;
+const FILL_NARROW  = 9;
+// Roughly what fraction of slots should get a real reason attached.
+const REASON_FRACTION_DESKTOP = 0.55;
+const REASON_FRACTION_NARROW  = 0.65;
 
 // ─── RNG ─────────────────────────────────────────────────────────────────────
 
@@ -105,9 +112,9 @@ function scrawlStyle(seedKey: string, isNarrow: boolean): ScrawlStyle {
   const color = INKS[Math.floor(rnd() * INKS.length)];
   // Tighter rotation range — visually still hand-lettered, no overlap.
   const rotate = (rnd() - 0.5) * 4.5; // ±2.25°
-  // Bigger overall, narrower variance so giants don't crowd.
-  const baseMin = isNarrow ? 1.25 : 1.45;
-  const baseMax = isNarrow ? 1.65 : 1.95;
+  // Mobile is tighter — smaller base sizes so we fit more in less vertical space.
+  const baseMin = isNarrow ? 1.0  : 1.45;
+  const baseMax = isNarrow ? 1.4  : 1.95;
   const size = (baseMin + rnd() * (baseMax - baseMin)) * hand.scale;
   const caseRoll = rnd();
   return { font: hand.font, color, rotate, size, upper: caseRoll > 0.85, lower: caseRoll < 0.18, weight: hand.weight };
@@ -121,9 +128,15 @@ function caseText(name: string, s: ScrawlStyle): string {
 
 // ─── Fill distribution ────────────────────────────────────────────────────────
 
-type Instance = { slug: string; key: string };
+type Instance = { slug: string; key: string; reason?: string };
 
-function buildInstances(rows: RankingRow[], target: number, cat: Category): Instance[] {
+function buildInstances(
+  rows: RankingRow[],
+  target: number,
+  cat: Category,
+  samples: WallSample[],
+  reasonFraction: number,
+): Instance[] {
   const pool = rows.length ? rows : MODELS.filter((m) => m.slug !== "other").map((m) => ({ slug: m.slug, votes: 0 }));
   const total = pool.reduce((a, r) => a + r.votes, 0);
   const counts = new Map<string, number>();
@@ -147,9 +160,34 @@ function buildInstances(rows: RankingRow[], target: number, cat: Category): Inst
       counts.set(slug, (counts.get(slug) ?? 0) + 1);
     }
   }
+
+  // Bucket the samples by slug so we can hand a real reason to a slot that
+  // matches that slug. Each reason gets used at most once per render.
+  const reasonsBySlug = new Map<string, string[]>();
+  for (const s of samples) {
+    const arr = reasonsBySlug.get(s.slug);
+    if (arr) arr.push(s.reason);
+    else reasonsBySlug.set(s.slug, [s.reason]);
+  }
+  const reasonBudgetPerSlug = new Map<string, number>();
+  for (const [slug, n] of counts) {
+    const wantWith = Math.round(n * reasonFraction);
+    const have = reasonsBySlug.get(slug)?.length ?? 0;
+    reasonBudgetPerSlug.set(slug, Math.min(wantWith, have));
+  }
+
   const out: Instance[] = [];
   for (const [slug, n] of counts) {
-    for (let o = 0; o < n; o++) out.push({ slug, key: `${cat}:${slug}#${o}` });
+    let budget = reasonBudgetPerSlug.get(slug) ?? 0;
+    const reasons = reasonsBySlug.get(slug);
+    for (let o = 0; o < n; o++) {
+      let reason: string | undefined;
+      if (budget > 0 && reasons && reasons.length) {
+        reason = reasons.shift();
+        budget -= 1;
+      }
+      out.push({ slug, key: `${cat}:${slug}#${o}`, reason });
+    }
   }
   out.sort((a, b) => hashStr(a.key + "~order") - hashStr(b.key + "~order"));
   return out;
@@ -235,7 +273,7 @@ function MonthDropdown({ months, selected, onChange }: {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type BoardData = { kiss: RankingRow[]; marry: RankingRow[]; kill: RankingRow[]; totalVoters: number } | null;
+type BoardData = (Leaderboard | ArchiveEntry) | null;
 type MyScrawl = { id: number; text: string; slug: string; reason?: string };
 type ActiveInput = { cat: Category; xPct: number; yPct: number } | null;
 type WriterStep = "name" | "reason";
@@ -259,6 +297,11 @@ export function BathroomBoard() {
   const [draftReason, setDraftReason] = useState("");
   const scrawlSeq = useRef(0);
 
+  // Per-category "✓ posted" pop. Cleared automatically after 1.6s. Keyed by
+  // (cat, sequence number) so consecutive posts in the same column re-trigger
+  // the animation cleanly.
+  const [postedFlash, setPostedFlash] = useState<{ cat: Category; key: number } | null>(null);
+
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
     const sync = () => setIsNarrow(query.matches);
@@ -281,6 +324,11 @@ export function BathroomBoard() {
   const monthList  = ["live", ...archive.map((e) => e.month)];
 
   const resetWriter = useCallback(() => {
+    // Drop focus so the mobile keyboard doesn't keep covering the wall and
+    // intercepting the user's next tap (one of the more annoying iOS quirks).
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     setActive(null);
     setWriterStep("name");
     setDraftName("");
@@ -294,7 +342,23 @@ export function BathroomBoard() {
       scrawlSeq.current += 1;
       const id = scrawlSeq.current;
       setMyScrawls((prev) => ({ ...prev, [cat]: [{ id, text, slug, reason }, ...prev[cat]] }));
+      // Drop any focus on the input before tearing down so the mobile keyboard
+      // doesn't linger over the wall and block the next tap.
+      if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       resetWriter();
+
+      // Celebrate. Confetti + soft chime + inline "posted ✓" near the column.
+      // Wrapped in try/catch so a flaky AudioContext on iOS can't silence the
+      // post itself.
+      try { burstConfetti({ count: 70 }); } catch { /* noop */ }
+      try { playVote(); } catch { /* noop */ }
+      setPostedFlash({ cat, key: id });
+      window.setTimeout(() => {
+        setPostedFlash((p) => (p && p.key === id ? null : p));
+      }, 1600);
+
       fetch("/api/scrawl", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -309,6 +373,9 @@ export function BathroomBoard() {
   const openInput = useCallback(
     (cat: Category, e: React.MouseEvent<HTMLDivElement>) => {
       if (!isLive) return;
+      // One scrawl per category per visit — keeps the "kiss/marry/kill"
+      // contract honest. People can still re-cast by reloading.
+      if (myScrawls[cat].length > 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const xPct = ((e.clientX - rect.left) / rect.width) * 100;
       const yPct = ((e.clientY - rect.top) / rect.height) * 100;
@@ -319,7 +386,7 @@ export function BathroomBoard() {
       setWriterStep("name");
       setActive({ cat, xPct: Math.min(60, Math.max(2, xPct)), yPct: Math.min(70, Math.max(2, yPct)) });
     },
-    [isLive],
+    [isLive, myScrawls],
   );
 
   const handleNameConfirm = useCallback((text: string, slug: string) => {
@@ -337,13 +404,13 @@ export function BathroomBoard() {
   const activeCat = active ? CATS.find((c) => c.key === active.cat) : null;
 
   return (
-    <section id="board" className="relative px-2 pt-5 pb-14 sm:px-6 sm:pt-8 sm:pb-20">
+    <section id="board" className="relative px-1.5 pt-3 pb-10 sm:px-6 sm:pt-8 sm:pb-20">
       <div className="mx-auto max-w-6xl">
         <div
           className="whiteboard"
           style={{
             padding: isNarrow
-              ? "1.1rem 0.85rem 1.4rem"
+              ? "0.85rem 0.65rem 0.9rem"
               : "clamp(1.5rem, 4vw, 2.75rem) clamp(1rem, 3vw, 2.25rem)",
           }}
         >
@@ -353,25 +420,35 @@ export function BathroomBoard() {
             alignItems: isNarrow ? "flex-start" : "baseline",
             flexDirection: isNarrow ? "column" : "row",
             flexWrap: "wrap",
-            gap: isNarrow ? "0.45rem" : "0.6rem 1.1rem",
-            marginBottom: isNarrow ? "0.85rem" : "0.9rem",
+            gap: isNarrow ? "0.35rem" : "0.6rem 1.1rem",
+            marginBottom: isNarrow ? "0.6rem" : "0.9rem",
           }}>
             <h2
               className="marker"
               style={{
                 fontWeight: 400,
-                fontSize: isNarrow ? "clamp(1.85rem, 9.5vw, 2.6rem)" : "clamp(2rem, 5vw, 3.4rem)",
-                color: "#1a1a1a", lineHeight: 1.05, margin: 0, transform: "rotate(-1deg)",
+                fontSize: isNarrow ? "clamp(1.25rem, 6vw, 1.85rem)" : "clamp(2rem, 5vw, 3.4rem)",
+                color: "#1a1a1a", lineHeight: 1.05, margin: 0,
+                transform: "rotate(-1deg)",
+                whiteSpace: "nowrap",
               }}
             >
               Which A.I. would you&hellip;
             </h2>
-            <MonthDropdown months={monthList} selected={selectedMonth} onChange={setSelected} />
-            {voterCount > 0 && (
-              <span style={{ fontFamily: SANS, fontWeight: 500, fontSize: isNarrow ? "0.85rem" : "0.95rem", color: "#666" }}>
-                {voterCount.toLocaleString()} {isLive ? "hands on the wall this month" : "hands that month"}
-              </span>
-            )}
+            <div style={{
+              display: "flex", alignItems: "center", gap: isNarrow ? "0.55rem" : "1.1rem",
+              flexWrap: "wrap",
+            }}>
+              <MonthDropdown months={monthList} selected={selectedMonth} onChange={setSelected} />
+              {voterCount > 0 && (
+                <span style={{
+                  fontFamily: SANS, fontWeight: 500,
+                  fontSize: isNarrow ? "0.78rem" : "0.95rem", color: "#666",
+                }}>
+                  {voterCount.toLocaleString()} {isLive ? "hands on the wall" : "hands that month"}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* ── Hint card (white paper, marker stripe) ── */}
@@ -380,9 +457,9 @@ export function BathroomBoard() {
               style={{
                 position: "relative",
                 background: "rgba(255,255,253,0.85)",
-                borderRadius: "14px",
-                padding: isNarrow ? "0.9rem 1rem 1rem 1.05rem" : "1.05rem 1.4rem 1.1rem 1.55rem",
-                marginBottom: isNarrow ? "1.1rem" : "1.4rem",
+                borderRadius: isNarrow ? "12px" : "14px",
+                padding: isNarrow ? "0.6rem 0.85rem 0.65rem 0.95rem" : "1.05rem 1.4rem 1.1rem 1.55rem",
+                marginBottom: isNarrow ? "0.7rem" : "1.4rem",
                 boxShadow:
                   "0 1px 0 rgba(255,255,255,0.6) inset, 0 6px 22px -10px rgba(0,0,0,0.18), 0 2px 0 rgba(0,0,0,0.04)",
                 border: "1px solid rgba(0,0,0,0.08)",
@@ -394,15 +471,18 @@ export function BathroomBoard() {
                 aria-hidden
                 style={{
                   position: "absolute", left: 0, top: 0, bottom: 0,
-                  width: isNarrow ? 6 : 7,
+                  width: isNarrow ? 5 : 7,
                   background: "linear-gradient(180deg, #e0589b 0% 33.33%, #2bb39a 33.33% 66.66%, #ef6351 66.66% 100%)",
                 }}
               />
-              <div style={{ display: "flex", alignItems: "center", gap: isNarrow ? "0.7rem" : "0.95rem" }}>
+              <div style={{
+                display: "flex", alignItems: "center",
+                gap: isNarrow ? "0.55rem" : "0.95rem",
+              }}>
                 <span
                   aria-hidden
                   style={{
-                    fontSize: isNarrow ? "1.7rem" : "2rem",
+                    fontSize: isNarrow ? "1.25rem" : "2rem",
                     lineHeight: 1, flexShrink: 0,
                     transform: "rotate(-12deg)",
                     filter: "drop-shadow(0 1px 1px rgba(0,0,0,0.15))",
@@ -412,28 +492,28 @@ export function BathroomBoard() {
                 </span>
                 <div style={{ minWidth: 0 }}>
                   <div
-                    className="marker"
+                    className={isNarrow ? "marker crisp" : "marker"}
                     style={{
                       fontFamily: "var(--font-permanent-marker), cursive",
                       fontWeight: 400,
-                      fontSize: isNarrow ? "1.15rem" : "1.45rem",
+                      fontSize: isNarrow ? "0.92rem" : "1.45rem",
                       color: "#1a1a1a", lineHeight: 1.15,
                       letterSpacing: "0.01em",
                     }}
                   >
-                    Tap a column to write on the wall
+                    {isNarrow ? "Tap a column to write" : "Tap a column to write on the wall"}
                   </div>
                   <div
                     style={{
                       fontFamily: "var(--font-caveat), cursive",
                       fontWeight: 600,
-                      fontSize: isNarrow ? "1rem" : "1.1rem",
+                      fontSize: isNarrow ? "0.82rem" : "1.1rem",
                       color: "#5b5448",
-                      marginTop: "0.15rem",
-                      lineHeight: 1.25,
+                      marginTop: "0.05rem",
+                      lineHeight: 1.2,
                     }}
                   >
-                    type any name &mdash; leave a hot take while you&rsquo;re at it
+                    type any name &mdash; drop a hot take too
                   </div>
                 </div>
               </div>
@@ -448,8 +528,12 @@ export function BathroomBoard() {
           }}>
             {CATS.map((cat, ci) => {
               const rows      = (boardData?.[cat.key] ?? []) as RankingRow[];
-              const instances = buildInstances(rows, fill, cat.key);
+              const liveSamples = (boardData && "samples" in boardData ? boardData.samples : undefined);
+              const samples   = liveSamples?.[cat.key] ?? [];
+              const reasonFraction = isNarrow ? REASON_FRACTION_NARROW : REASON_FRACTION_DESKTOP;
+              const instances = buildInstances(rows, fill, cat.key, samples, reasonFraction);
               const breakdown = buildBreakdown(rows);
+              const alreadyPosted = myScrawls[cat.key].length > 0;
               return (
                 <WallColumn
                   key={cat.key}
@@ -461,10 +545,12 @@ export function BathroomBoard() {
                   isLive={isLive}
                   loading={loading && isLive}
                   myScrawls={myScrawls[cat.key]}
+                  alreadyPosted={alreadyPosted}
                   desktopActive={!isNarrow && active?.cat === cat.key ? active : null}
                   writerStep={writerStep}
                   draftName={draftName}
                   draftReason={draftReason}
+                  postedFlash={postedFlash?.cat === cat.key ? postedFlash : null}
                   onColumnClick={(e) => openInput(cat.key, e)}
                   onDraftNameChange={setDraftName}
                   onDraftReasonChange={setDraftReason}
@@ -478,19 +564,23 @@ export function BathroomBoard() {
 
           {/* ── Branding ── */}
           <div style={{
-            marginTop: isNarrow ? "1.4rem" : "1.75rem",
-            paddingTop: "1rem",
+            marginTop: isNarrow ? "0.85rem" : "1.75rem",
+            paddingTop: isNarrow ? "0.65rem" : "1rem",
             borderTop: "1px solid rgba(0,0,0,0.1)",
-            display: "flex", alignItems: "center", gap: "0.35rem", flexWrap: "wrap"
+            display: "flex", alignItems: "center",
+            gap: "0.35rem", flexWrap: "wrap",
           }}>
-            <span style={{ fontFamily: SANS, fontWeight: 400, fontSize: "0.85rem", color: "#888" }}>powered by</span>
-            <span style={{ fontFamily: SANS, fontWeight: 800, fontSize: "1rem", color: "#16a34a" }}>VLS</span>
-            <span style={{ fontFamily: SANS, fontWeight: 400, fontSize: "0.85rem", color: "#888" }}>+</span>
-            <span style={{ fontFamily: SANS, fontWeight: 800, fontSize: "1rem", color: "#1d4ed8" }}>BG8</span>
+            <span style={{ fontFamily: SANS, fontWeight: 400, fontSize: isNarrow ? "0.78rem" : "0.85rem", color: "#888" }}>powered by</span>
+            <span style={{ fontFamily: SANS, fontWeight: 800, fontSize: isNarrow ? "0.92rem" : "1rem", color: "#16a34a" }}>VLS</span>
+            <span style={{ fontFamily: SANS, fontWeight: 400, fontSize: isNarrow ? "0.78rem" : "0.85rem", color: "#888" }}>+</span>
+            <span style={{ fontFamily: SANS, fontWeight: 800, fontSize: isNarrow ? "0.92rem" : "1rem", color: "#1d4ed8" }}>BG8</span>
           </div>
         </div>
 
-        <p style={{ marginTop: "0.75rem", textAlign: "center", fontFamily: SANS, fontSize: "0.78rem", color: "rgba(0,0,0,0.4)" }}>
+        <p style={{
+          marginTop: "0.6rem", textAlign: "center", fontFamily: SANS,
+          fontSize: isNarrow ? "0.7rem" : "0.78rem", color: "rgba(0,0,0,0.4)",
+        }}>
           live wall · updates every few seconds · write as many as you like
         </p>
       </div>
@@ -518,7 +608,8 @@ export function BathroomBoard() {
 
 function WallColumn({
   cat, catIdx, instances, breakdown, isNarrow, isLive, loading,
-  myScrawls, desktopActive, writerStep, draftName, draftReason,
+  myScrawls, alreadyPosted, desktopActive, writerStep, draftName, draftReason,
+  postedFlash,
   onColumnClick, onDraftNameChange, onDraftReasonChange,
   onNameConfirm, onReasonSubmit, onCancel,
 }: {
@@ -530,10 +621,12 @@ function WallColumn({
   isLive: boolean;
   loading: boolean;
   myScrawls: MyScrawl[];
+  alreadyPosted: boolean;
   desktopActive: { cat: Category; xPct: number; yPct: number } | null;
   writerStep: WriterStep;
   draftName: string;
   draftReason: string;
+  postedFlash: { cat: Category; key: number } | null;
   onColumnClick: (e: React.MouseEvent<HTMLDivElement>) => void;
   onDraftNameChange: (t: string) => void;
   onDraftReasonChange: (t: string) => void;
@@ -541,34 +634,105 @@ function WallColumn({
   onReasonSubmit: (reason?: string) => void;
   onCancel: () => void;
 }) {
+  const clickable = isLive && !alreadyPosted;
   return (
     <div
-      onClick={isLive ? onColumnClick : undefined}
+      onClick={clickable ? onColumnClick : undefined}
+      className="wall-col"
+      data-clickable={clickable ? "true" : "false"}
       style={{
         position: "relative",
-        cursor: isLive ? "text" : "default",
-        padding: isNarrow ? "0.7rem 0.6rem 1.1rem" : "0.5rem 1rem 1.25rem",
+        cursor: clickable ? "text" : "default",
+        padding: isNarrow ? "0.45rem 0.55rem 0.7rem" : "0.5rem 1rem 1.25rem",
         borderRight: !isNarrow && catIdx < 2 ? "2px solid rgba(0,0,0,0.10)" : "none",
-        borderBottom: isNarrow && catIdx < 2 ? "2px dashed rgba(0,0,0,0.14)" : "none",
-        minHeight: isNarrow ? "340px" : "clamp(460px, 64vh, 720px)",
+        borderBottom: isNarrow && catIdx < 2 ? "1px dashed rgba(0,0,0,0.16)" : "none",
+        // Generous mobile tap area so any tap inside the column reliably opens
+        // the writer (and not just exact taps on the heading or text).
+        minHeight: isNarrow ? "240px" : "clamp(460px, 64vh, 720px)",
       }}
     >
-      {/* Heading */}
-      <h3
-        className="marker"
-        style={{
-          fontWeight: 400,
-          fontSize: isNarrow ? "clamp(2.2rem, 12vw, 3rem)" : "clamp(2.1rem, 4.5vw, 3.2rem)",
-          color: cat.color,
-          transform: `rotate(${cat.headingRot}deg)`,
-          display: "inline-block",
-          lineHeight: 1,
-          marginBottom: isNarrow ? "0.85rem" : "1.1rem",
-          textShadow: "0 1px 0 rgba(0,0,0,0.05)",
-        }}
-      >
-        {cat.title}
-      </h3>
+      {/* Heading + tap-cue (mobile only) */}
+      <div style={{
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: "0.6rem",
+        marginBottom: isNarrow ? "0.45rem" : "1.1rem",
+      }}>
+        <h3
+          className="marker"
+          style={{
+            fontWeight: 400,
+            fontSize: isNarrow ? "clamp(1.6rem, 7.5vw, 2.1rem)" : "clamp(2.1rem, 4.5vw, 3.2rem)",
+            color: cat.color,
+            transform: `rotate(${cat.headingRot}deg)`,
+            display: "inline-block",
+            lineHeight: 1,
+            margin: 0,
+            textShadow: "0 1px 0 rgba(0,0,0,0.05)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {cat.title}
+        </h3>
+        {postedFlash ? (
+          <span
+            key={postedFlash.key}
+            className="posted-pop crisp"
+            style={{
+              fontFamily: "var(--font-permanent-marker), cursive",
+              fontSize: isNarrow ? "0.95rem" : "1.1rem",
+              color: cat.color,
+              fontWeight: 400,
+              letterSpacing: "0.03em",
+              whiteSpace: "nowrap",
+              transform: "rotate(-3deg)",
+              border: `2px solid ${cat.color}`,
+              borderRadius: "999px",
+              padding: isNarrow ? "0.15rem 0.55rem" : "0.2rem 0.7rem",
+              background: "rgba(255,255,253,0.85)",
+              boxShadow: `0 6px 18px -8px ${cat.color}80`,
+            }}
+          >
+            posted ✓
+          </span>
+        ) : alreadyPosted ? (
+          <span
+            className="crisp"
+            style={{
+              fontFamily: SANS,
+              fontSize: isNarrow ? "0.7rem" : "0.72rem",
+              fontWeight: 800,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              color: cat.color,
+              border: `1.5px solid ${cat.color}55`,
+              background: "rgba(255,255,253,0.7)",
+              borderRadius: "999px",
+              padding: isNarrow ? "0.18rem 0.5rem" : "0.2rem 0.6rem",
+              whiteSpace: "nowrap",
+              opacity: 0.95,
+            }}
+          >
+            ✓ your pick
+          </span>
+        ) : (
+          isLive && (
+            <span
+              style={{
+                fontFamily: "var(--font-caveat), cursive",
+                fontSize: isNarrow ? "0.95rem" : "1rem",
+                color: cat.color,
+                fontWeight: 700,
+                opacity: 0.85,
+                whiteSpace: "nowrap",
+              }}
+            >
+              tap to add ✎
+            </span>
+          )
+        )}
+      </div>
 
       {/* Scrawl flow */}
       <div
@@ -577,10 +741,11 @@ function WallColumn({
           flexWrap: "wrap",
           alignContent: "flex-start",
           alignItems: "flex-start",
-          // Big row gap so rotated text + multi-line user scrawls never collide.
-          gap: isNarrow ? "1rem 1rem" : "1.25rem 1.4rem",
+          // Tighter on mobile; reasoned scrawls already break into 2 lines so
+          // a smaller row gap looks intentional, not crammed.
+          gap: isNarrow ? "0.55rem 0.85rem" : "1.25rem 1.4rem",
           pointerEvents: "none",
-          minHeight: isNarrow ? "200px" : "320px",
+          minHeight: isNarrow ? "120px" : "320px",
         }}
       >
         {loading && instances.length === 0 && myScrawls.length === 0 ? (
@@ -594,8 +759,8 @@ function WallColumn({
               const s = scrawlStyle(`mine:${cat.key}:${sc.id}`, isNarrow);
               const hasReason = !!sc.reason;
               const tilt = hasReason ? Math.max(-1.5, Math.min(1.5, s.rotate / 3)) : s.rotate;
-              const nameSize = Math.max(s.size, hasReason ? (isNarrow ? 1.55 : 1.7) : s.size);
-              const reasonSize = isNarrow ? 1.05 : 1.15;
+              const nameSize = Math.max(s.size, hasReason ? (isNarrow ? 1.35 : 1.7) : s.size);
+              const reasonSize = isNarrow ? 0.95 : 1.15;
               return (
                 <span
                   key={`mine-${sc.id}`}
@@ -610,15 +775,34 @@ function WallColumn({
                   }}
                 >
                   <span style={{
-                    fontFamily: s.font, color: s.color, fontSize: `${nameSize}rem`,
-                    fontWeight: s.weight, lineHeight: 1.1,
-                    whiteSpace: hasReason ? "normal" : "nowrap",
-                    wordBreak: "break-word",
+                    display: "inline-flex", alignItems: "center",
+                    flexWrap: "wrap", gap: "0.3rem",
                   }}>
-                    {caseText(sc.text, s)}
+                    {/* Finger pointer marks the writer's own scrawls. Lives
+                        outside the wobble filter so the emoji renders crisp. */}
+                    <span
+                      aria-label="your scrawl"
+                      className="crisp"
+                      style={{
+                        fontSize: isNarrow ? "1.1rem" : "1.25rem",
+                        lineHeight: 1,
+                        transform: "translateY(0.05rem)",
+                        filter: `drop-shadow(0 1px 2px ${cat.color}55)`,
+                      }}
+                    >
+                      👉
+                    </span>
+                    <span className="ink-wobble" style={{
+                      fontFamily: s.font, color: s.color, fontSize: `${nameSize}rem`,
+                      fontWeight: s.weight, lineHeight: 1.1,
+                      whiteSpace: hasReason ? "normal" : "nowrap",
+                      wordBreak: "break-word",
+                    }}>
+                      {caseText(sc.text, s)}
+                    </span>
                   </span>
                   {sc.reason && (
-                    <span style={{
+                    <span className="ink-wobble" style={{
                       fontFamily: "var(--font-caveat), cursive",
                       color: s.color,
                       fontSize: `${reasonSize}rem`,
@@ -637,22 +821,53 @@ function WallColumn({
               );
             })}
 
-            {/* Aggregate vote scrawls */}
+            {/* Aggregate vote scrawls — names that already exist on the wall.
+                If a slot has a real reason attached we render it underneath
+                the name in a smaller hand, just like a fresh user scrawl. */}
             {instances.map((inst) => {
               const m = getModel(inst.slug);
               if (!m) return null;
               const s = scrawlStyle(inst.key, isNarrow);
+              const hasReason = !!inst.reason;
+              const tilt = hasReason ? Math.max(-1.5, Math.min(1.5, s.rotate / 3)) : s.rotate;
+              const nameSize = Math.max(s.size, hasReason ? (isNarrow ? 1.4 : 1.55) : s.size);
+              const reasonSize = isNarrow ? 0.92 : 1.05;
               return (
                 <span
                   key={inst.key}
                   style={{
-                    fontFamily: s.font, color: s.color, fontSize: `${s.size}rem`,
-                    fontWeight: s.weight, lineHeight: 1.1,
-                    transform: `rotate(${s.rotate}deg)`, transformOrigin: "center",
-                    whiteSpace: "nowrap", display: "inline-block",
+                    display: "inline-flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    transform: `rotate(${tilt}deg)`,
+                    transformOrigin: hasReason ? "left top" : "center",
+                    maxWidth: hasReason ? (isNarrow ? "calc(100% - 0.5rem)" : "14rem") : undefined,
                   }}
                 >
-                  {caseText(m.name, s)}
+                  <span className="ink-wobble" style={{
+                    fontFamily: s.font, color: s.color, fontSize: `${nameSize}rem`,
+                    fontWeight: s.weight, lineHeight: 1.1,
+                    whiteSpace: hasReason ? "normal" : "nowrap",
+                    wordBreak: "break-word",
+                  }}>
+                    {caseText(m.name, s)}
+                  </span>
+                  {inst.reason && (
+                    <span className="ink-wobble" style={{
+                      fontFamily: "var(--font-caveat), cursive",
+                      color: s.color,
+                      fontSize: `${reasonSize}rem`,
+                      fontWeight: 600,
+                      lineHeight: 1.2,
+                      fontStyle: "italic",
+                      opacity: 0.86,
+                      marginTop: "0.1rem",
+                      whiteSpace: "normal",
+                      wordBreak: "break-word",
+                    }}>
+                      &ldquo;{inst.reason}&rdquo;
+                    </span>
+                  )}
                 </span>
               );
             })}
@@ -662,46 +877,65 @@ function WallColumn({
 
       {/* Top-3 percentage breakdown */}
       <div style={{
-        marginTop: isNarrow ? "1.1rem" : "1.4rem",
-        paddingTop: "0.7rem",
-        borderTop: "2px dashed rgba(0,0,0,0.14)",
+        marginTop: isNarrow ? "0.8rem" : "1.4rem",
+        paddingTop: isNarrow ? "0.5rem" : "0.7rem",
+        borderTop: "1px dashed rgba(0,0,0,0.16)",
         pointerEvents: "none",
       }}>
         <div style={{
-          fontFamily: SANS, fontWeight: 700, fontSize: "0.7rem",
+          fontFamily: SANS, fontWeight: 700, fontSize: isNarrow ? "0.62rem" : "0.7rem",
           letterSpacing: "0.12em", textTransform: "uppercase",
-          color: "#9a8f78", marginBottom: "0.55rem",
+          color: "#9a8f78", marginBottom: isNarrow ? "0.4rem" : "0.55rem",
         }}>
           top 3 getting {cat.title.toLowerCase()}ed
         </div>
         {breakdown.length === 0 ? (
           <div style={{ fontFamily: SANS, fontSize: "0.85rem", color: "#b3a892" }}>no votes yet</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: isNarrow ? "0.5rem" : "0.4rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: isNarrow ? "0.3rem" : "0.4rem" }}>
             {breakdown.slice(0, 3).map((s, i) => {
               const m = getModel(s.slug);
               if (!m) return null;
               const pct = Math.round(s.pct);
               return (
-                <div key={s.slug} style={{ display: "flex", alignItems: "center", gap: "0.55rem" }}>
+                <div key={s.slug} style={{
+                  display: "flex", alignItems: "center",
+                  gap: isNarrow ? "0.45rem" : "0.55rem",
+                }}>
                   <span style={{
-                    width: 18, height: 18, borderRadius: 999,
+                    width: isNarrow ? 16 : 18, height: isNarrow ? 16 : 18, borderRadius: 999,
                     background: i === 0 ? cat.color : "rgba(0,0,0,0.08)",
                     color: i === 0 ? "#fff" : "#7a6f57",
-                    fontFamily: SANS, fontWeight: 800, fontSize: "0.7rem",
+                    fontFamily: SANS, fontWeight: 800, fontSize: isNarrow ? "0.62rem" : "0.7rem",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     flexShrink: 0,
                   }}>{i + 1}</span>
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: m.color, flexShrink: 0, boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
-                  <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: isNarrow ? "0.92rem" : "0.88rem", color: "#3a342a", whiteSpace: "nowrap" }}>{m.name}</span>
-                  <span style={{ flex: 1, height: 7, borderRadius: 999, background: "rgba(0,0,0,0.07)", overflow: "hidden", minWidth: "1.5rem" }}>
-                    <span style={{ display: "block", height: "100%", width: `${Math.max(3, s.pct)}%`, background: m.color, borderRadius: 999 }} />
+                  <span style={{
+                    width: isNarrow ? 8 : 10, height: isNarrow ? 8 : 10,
+                    borderRadius: "50%", background: m.color, flexShrink: 0,
+                    boxShadow: "0 0 0 1px rgba(0,0,0,0.12)",
+                  }} />
+                  <span style={{
+                    fontFamily: SANS, fontWeight: 700,
+                    fontSize: isNarrow ? "0.82rem" : "0.88rem",
+                    color: "#3a342a", whiteSpace: "nowrap",
+                  }}>{m.name}</span>
+                  <span style={{
+                    flex: 1, height: isNarrow ? 5 : 7, borderRadius: 999,
+                    background: "rgba(0,0,0,0.07)", overflow: "hidden", minWidth: "1.5rem",
+                  }}>
+                    <span style={{
+                      display: "block", height: "100%",
+                      width: `${Math.max(3, s.pct)}%`,
+                      background: m.color, borderRadius: 999,
+                      transition: "width 0.6s ease",
+                    }} />
                   </span>
                   <span style={{
                     fontFamily: SANS, fontWeight: 800,
-                    fontSize: isNarrow ? "0.95rem" : "0.9rem",
+                    fontSize: isNarrow ? "0.82rem" : "0.9rem",
                     color: cat.color, fontVariantNumeric: "tabular-nums",
-                    minWidth: "2.6rem", textAlign: "right",
+                    minWidth: isNarrow ? "2.2rem" : "2.6rem", textAlign: "right",
                   }}>
                     {pct}%
                   </span>
@@ -752,12 +986,23 @@ function DesktopWriter({
 }) {
   return (
     <div
+      className="pop-in"
       style={{
         position: "absolute", left: `${xPct}%`, top: `${yPct}%`,
         zIndex: 30, width: "16rem", maxWidth: "calc(100% - 1rem)",
       }}
       onClick={(e) => e.stopPropagation()}
     >
+      {/* ripple at the tap point */}
+      <span
+        aria-hidden
+        className="click-ripple"
+        style={{
+          left: 0, top: 0,
+          background: `${cat.color}55`,
+          border: `2px solid ${cat.color}`,
+        }}
+      />
       {step === "name" ? (
         <NameStep
           cat={cat}
@@ -801,6 +1046,7 @@ function MobileWriter({
     <>
       <div
         onClick={onCancel}
+        className="fade-in"
         style={{
           position: "fixed", inset: 0, zIndex: 40,
           background: "rgba(0,0,0,0.4)",
@@ -809,15 +1055,17 @@ function MobileWriter({
         }}
       />
       <div
+        className="sheet-up"
         style={{
           position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50,
           background: "#f7f2e5",
           borderTop: `4px solid ${cat.color}`,
           borderRadius: "22px 22px 0 0",
-          padding: "1.25rem 1.25rem 2rem",
+          padding: "1.1rem 1.1rem 1.6rem",
           boxShadow: "0 -10px 50px rgba(0,0,0,0.28)",
           maxHeight: "85vh",
           overflowY: "auto",
+          paddingBottom: "calc(1.6rem + env(safe-area-inset-bottom))",
         }}
         onClick={(e) => e.stopPropagation()}
       >

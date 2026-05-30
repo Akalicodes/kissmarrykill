@@ -12,6 +12,7 @@ import type {
   Reason,
   ReasonSort,
   VoteInput,
+  WallSample,
 } from "@/lib/types";
 import type { Storage } from "./index";
 
@@ -302,12 +303,34 @@ export class MemoryStorage implements Storage {
     const monthScrawls = this.scrawls.filter((s) => s.month === month);
     const scrawlsBy = (cat: Category) =>
       monthScrawls.filter((s) => s.category === cat).map((s) => s.slug);
+
+    // Build sample {slug, reason} pairs per category from real votes + scrawls
+    // so the wall can render existing names alongside a real hot-take.
+    const sampleFor = (cat: Category): WallSample[] => {
+      const out: WallSample[] = [];
+      for (const v of monthVotes) {
+        const slug = cat === "kiss" ? v.kiss : cat === "marry" ? v.marry : v.kill;
+        const r = cat === "kiss" ? v.kissReason : cat === "marry" ? v.marryReason : v.killReason;
+        if (r && r.trim()) out.push({ slug, reason: r.trim() });
+      }
+      for (const s of monthScrawls) {
+        if (s.category !== cat) continue;
+        if (s.reason && s.reason.trim()) out.push({ slug: s.slug, reason: s.reason.trim() });
+      }
+      return shuffleStable(out, `${month}:${cat}`).slice(0, 48);
+    };
+
     return {
       month,
       kiss: tally([...monthVotes.map((v) => v.kiss), ...scrawlsBy("kiss")]),
       marry: tally([...monthVotes.map((v) => v.marry), ...scrawlsBy("marry")]),
       kill: tally([...monthVotes.map((v) => v.kill), ...scrawlsBy("kill")]),
       totalVoters: monthVotes.length + monthScrawls.length,
+      samples: {
+        kiss: sampleFor("kiss"),
+        marry: sampleFor("marry"),
+        kill: sampleFor("kill"),
+      },
     };
   }
 
@@ -407,6 +430,20 @@ export class MemoryStorage implements Storage {
     ).length;
     return { kind: opts.kind, count, on };
   }
+}
+
+function shuffleStable<T>(arr: T[], seedKey: string): T[] {
+  // Deterministic shuffle keyed by month+category so the same set of seeded
+  // reasons doesn't reshuffle on every poll (would cause the wall to flicker).
+  let h = 5381;
+  for (let i = 0; i < seedKey.length; i++) h = (((h << 5) + h) ^ seedKey.charCodeAt(i)) | 0;
+  const out = arr.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    h = (h * 1664525 + 1013904223) | 0;
+    const j = Math.abs(h) % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
 function tally(slugs: string[]): RankingRow[] {

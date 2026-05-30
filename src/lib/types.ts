@@ -23,12 +23,31 @@ export type RankingRow = {
   votes: number;
 };
 
+/**
+ * A small "wall sample" — one slug paired with one real reason somebody left.
+ * Used to render existing names on the wall with their hot-take attached, so
+ * the board doesn't look like a list of bare model names.
+ */
+export type WallSample = {
+  slug: string;
+  reason: string;
+};
+
 export type Leaderboard = {
   month: string; // YYYY-MM
   kiss: RankingRow[];
   marry: RankingRow[];
   kill: RankingRow[];
   totalVoters: number;
+  /**
+   * Up to ~32 examples per category of `{ slug, reason }` we can scatter on
+   * the wall so existing names render with quotes attached.
+   */
+  samples?: {
+    kiss: WallSample[];
+    marry: WallSample[];
+    kill: WallSample[];
+  };
 };
 
 /** Used by the Reason Wall and Hot Takes feeds. */

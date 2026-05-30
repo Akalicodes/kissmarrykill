@@ -24,6 +24,8 @@ dist
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+nextdev.log
+*.log
 
 # typescript
 *.tsbuildinfo
