@@ -83,31 +83,97 @@ export class MemoryStorage implements Storage {
       },
     };
 
-    const seedReasons: Record<Category, [string, string][]> = {
+    // Hot-take "seed" reasons keyed by the slug they're best paired with.
+    // The wall is much more lively when most scrawls have something attached
+    // to them, so we plant a generic pool too (used when no slug-specific
+    // line exists) and assign a reason to ~60% of the seed votes.
+    const seedReasons: Record<Category, Record<string, string[]>> = {
+      kiss: {
+        grok:       ["unhinged in a way i find endearing", "the bad-boy energy is unmatched", "no filter, no notes"],
+        claude:     ["actually fun to talk to about weird stuff", "soft-spoken intellectual", "i would brunch with claude"],
+        chatgpt:    ["it laughed at my joke i felt seen", "the comfort hookup of LLMs"],
+        mistral:    ["european energy, je l'adore", "petite et puissante"],
+        deepseek:   ["felt like talking to a very confident grad student at 3am"],
+        llama:      ["i can run it on my laptop, that's foreplay"],
+        gemini:     ["bing-coded but kinda hot ngl"],
+        qwen:       ["mysterious foreign exchange student vibes"],
+        perplexity: ["the answer-haver. no notes."],
+        copilot:    ["the work-from-home crush"],
+        cursor:     ["the IDE girlfriend experience"],
+        other:      ["my weird local fine-tune i'm in love with"],
+      },
+      marry: {
+        chatgpt:    ["the rock i build my life on", "stable, dependable, dad-coded", "we already have shared receipts"],
+        claude:     ["it remembers my style, that's marriage", "writes my emails better than i do"],
+        cursor:     ["i would die for cursor", "we share a calendar and a codebase"],
+        perplexity: ["stopped using google because of this", "the answer to in-laws asking dumb questions"],
+        copilot:    ["we have a working relationship and that's enough"],
+        gemini:     ["the safe choice and i'm tired"],
+        llama:      ["i own the weights, that's a prenup"],
+        mistral:    ["small, quick, never says too much"],
+        deepseek:   ["the budget bride, no shame"],
+        qwen:       ["consistent and quiet, that's the dream"],
+        grok:       ["jk no one is marrying grok"],
+        other:      ["my company's internal model. boring but mine."],
+      },
+      kill: {
+        grok:       ["it doesnt understand what im trying to say most of the time", "twitter brain in an LLM body"],
+        gemini:     ["answers everything except the question", "blocked my prompt because of vibes"],
+        copilot:    ["every reply ends with 'would you like me to'", "office-core. literally."],
+        qwen:       ["i cant tell if its good or if im being gaslit"],
+        chatgpt:    ["the 'as a large language model' era broke me", "i'm tired of em-dashes"],
+        claude:     ["it apologized to me four times in one reply"],
+        llama:      ["the open-source loyalty isn't enough anymore"],
+        mistral:    ["where did you go, le chat"],
+        deepseek:   ["i don't trust whatever it's been trained on"],
+        perplexity: ["a wrapper with confidence issues"],
+        cursor:     ["my rent shouldn't be a tab autocomplete fee"],
+        other:      ["that random api i regret integrating"],
+      },
+    };
+
+    const genericReasons: Record<Category, string[]> = {
       kiss: [
-        ["grok", "unhinged in a way i find endearing"],
-        ["claude", "actually fun to talk to about weird stuff"],
-        ["mistral", "european energy, je l'adore"],
-        ["deepseek", "felt like talking to a very confident grad student at 3am"],
-        ["llama", "i can run it on my laptop, that's foreplay"],
+        "fun energy", "would absolutely text back",
+        "made me laugh", "vibes are off the charts",
+        "a delight, genuinely", "i light up when i see it",
+        "summer fling material", "playful, unserious, perfect",
+        "the chaotic good one",
       ],
       marry: [
-        ["chatgpt", "the rock i build my life on"],
-        ["claude", "it remembers my style, that's marriage"],
-        ["cursor", "i would die for cursor"],
-        ["perplexity", "stopped using google because of this"],
-        ["copilot", "we have a working relationship and that's enough"],
+        "reliable, dependable, mine", "the long-term option",
+        "the boring choice and i mean that lovingly",
+        "we'd grow old together", "no surprises here, just trust",
+        "settles me", "shared values, shared cache",
+        "would file taxes with",
       ],
       kill: [
-        ["grok", "it doesnt understand what im trying to say most of the time"],
-        ["gemini", "answers everything except the question"],
-        ["copilot", "every reply ends with 'would you like me to'"],
-        ["qwen", "i cant tell if its good or if im being gaslit"],
-        ["chatgpt", "the 'as a large language model' era broke me"],
+        "no it just no", "the audacity",
+        "stop yapping", "every output is a lecture",
+        "nothing redeeming", "wastes my tokens",
+        "this is a crime against context",
+        "frankly insulting", "i'd rather use a calculator",
       ],
     };
 
+    const pickGeneric = (cat: Category) => {
+      const arr = genericReasons[cat];
+      return arr[Math.floor(Math.random() * arr.length)];
+    };
+
+    const pickSlugReason = (cat: Category, slug: string): string => {
+      const specific = seedReasons[cat][slug];
+      if (specific && Math.random() < 0.65) {
+        return specific[Math.floor(Math.random() * specific.length)];
+      }
+      return pickGeneric(cat);
+    };
+
     const totalSeed = 240;
+    // Reason coverage: ~60% of votes get at least one reason (often more).
+    // Each pick rolls independently so some votes get all three reasons,
+    // some get one or two — feels organic.
+    const REASON_RATE = 0.62;
     for (let i = 0; i < totalSeed; i++) {
       const kiss = weightedPick(weights.kiss);
       let marry = weightedPick(weights.marry);
@@ -115,6 +181,9 @@ export class MemoryStorage implements Storage {
       if (kiss === marry && marry === kill) {
         marry = weightedPick(weights.marry);
       }
+      const kr = Math.random() < REASON_RATE ? pickSlugReason("kiss", kiss) : null;
+      const mr = Math.random() < REASON_RATE ? pickSlugReason("marry", marry) : null;
+      const xr = Math.random() < REASON_RATE ? pickSlugReason("kill", kill) : null;
       this.votes.push({
         id: randomUUID(),
         voterToken: `seed-${i}`,
@@ -122,34 +191,28 @@ export class MemoryStorage implements Storage {
         kiss,
         marry,
         kill,
-        kissReason: null,
-        marryReason: null,
-        killReason: null,
+        kissReason: kr,
+        marryReason: mr,
+        killReason: xr,
         at: new Date(Date.now() - Math.random() * 1000 * 60 * 60 * 24 * 12).toISOString(),
       });
     }
 
-    // Plant the seed reasons across the most recent votes, and react to them
-    // so the wall and Hot Takes tab have something interesting to show.
+    // Sprinkle reactions on the last batch of reasons so the Hot Takes tab
+    // has something punchy on first load.
+    const recentWithReasons = this.votes
+      .slice(-30)
+      .filter((v) => v.kissReason || v.marryReason || v.killReason);
     let r = 0;
-    for (const cat of ["kiss", "marry", "kill"] as Category[]) {
-      for (const [slug, reason] of seedReasons[cat]) {
-        if (r >= this.votes.length) break;
-        const v = this.votes[this.votes.length - 1 - r];
-        if (cat === "kiss") {
-          v.kiss = slug;
-          v.kissReason = reason;
-        } else if (cat === "marry") {
-          v.marry = slug;
-          v.marryReason = reason;
-        } else {
-          v.kill = slug;
-          v.killReason = reason;
-        }
-        // Reactions: random spread, weighted toward fire
-        const fires = Math.floor(Math.random() * 30) + 5;
-        const skulls = Math.floor(Math.random() * 12);
-        const sobs = Math.floor(Math.random() * 8);
+    for (const v of recentWithReasons) {
+      const cats: Category[] = [];
+      if (v.kissReason) cats.push("kiss");
+      if (v.marryReason) cats.push("marry");
+      if (v.killReason) cats.push("kill");
+      for (const cat of cats) {
+        const fires  = Math.floor(Math.random() * 22) + 2;
+        const skulls = Math.floor(Math.random() * 10);
+        const sobs   = Math.floor(Math.random() * 7);
         const stamp = new Date(
           Date.now() - Math.random() * 1000 * 60 * 60 * 6,
         ).toISOString();
